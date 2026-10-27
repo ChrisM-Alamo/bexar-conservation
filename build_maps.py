@@ -1,3 +1,4 @@
+import os
 import time
 from datetime import datetime, timedelta
 import pandas as pd
@@ -7,6 +8,7 @@ from folium.features import GeoJsonTooltip
 import branca.colormap as cm
 from pyinaturalist import get_observations
 
+DATA_FILE = "bexar_rolling_12mo.parquet"
 BEXAR_PLACE_ID = 49994
 H3_RESOLUTION = 8
 
@@ -30,50 +32,81 @@ TEXAS_SGCN = [
     "Batesimalva violacea", "Strophostyles leiosperma", "Spigelia texana"
 ]
 
-one_year_ago = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
-print(f"Fetching Bexar County observations since {one_year_ago}...")
+# 1. Load Existing Buffer or Initialize Empty
+if os.path.exists(DATA_FILE):
+    df_existing = pd.read_parquet(DATA_FILE)
+    print(f"Loaded existing baseline: {len(df_existing):,} observations.")
+else:
+    df_existing = pd.DataFrame(columns=["id", "observed_on", "latitude", "longitude", "scientific_name"])
+    print("No baseline file found. Starting fresh.")
 
-records = []
-# Pull up to 50 pages (10,000 observations) to stay comfortably within workflow limits
-MAX_PAGES = 50 
+# 2. Query Recent Window (10-day lookback to catch late-synced observations)
+today = datetime.now()
+lookback_date = (today - timedelta(days=10)).strftime("%Y-%m-%d")
+cutoff_date = (today - timedelta(days=365)).strftime("%Y-%m-%d")
 
-for page in range(1, MAX_PAGES + 1):
+print(f"Fetching recent observations since {lookback_date}...")
+
+recent_records = []
+page = 1
+while True:
     resp = get_observations(
         place_id=BEXAR_PLACE_ID,
         quality_grade="research",
-        d1=one_year_ago,
+        d1=lookback_date,
         geo=True,
         geoprivacy="open",
         per_page=200,
         page=page
     )
     results = resp.get("results", [])
-    if not results:
+    if not results or page > 40:  # 40 pages = 8,000 observations, more than enough for a week
         break
-        
+
     for obs in results:
         geojson = obs.get("geojson")
         if geojson and "coordinates" in geojson:
             lon, lat = geojson["coordinates"]
             taxon = obs.get("taxon") or {}
-            records.append({
+            obs_date = obs.get("observed_on_details", {}).get("date") or str(obs.get("observed_on", ""))[:10]
+            recent_records.append({
                 "id": obs["id"],
+                "observed_on": obs_date,
                 "scientific_name": taxon.get("name", "Unknown"),
                 "latitude": lat,
                 "longitude": lon
             })
+    page += 1
     time.sleep(0.5)
 
-df = pd.DataFrame(records).dropna(subset=["latitude", "longitude"])
-print(f"Loaded {len(df):,} observations.")
+print(f"Retrieved {len(recent_records):,} new/updated observations from API.")
 
-# Categorize species
+# 3. Concatenate, Deduplicate, and Apply 12-Month Rolling Window
+if recent_records:
+    df_new = pd.DataFrame(recent_records)
+    df = pd.concat([df_existing, df_new], ignore_index=True)
+else:
+    df = df_existing
+
+# Ensure valid coordinates and drop duplicates (keep newest record)
+df = df.dropna(subset=["latitude", "longitude", "observed_on"])
+df = df.drop_duplicates(subset=["id"], keep="last")
+
+# Rolling 12-Month Filter: Drop observations older than 365 days
+df = df[df["observed_on"] >= cutoff_date]
+print(f"Total rolling active observations (last 365 days): {len(df):,}")
+
+# Save updated dataset back to Parquet
+df.to_parquet(DATA_FILE, compression="snappy", index=False)
+
+# ---------------------------------------------------------
+# 4. Process H3 Grids & Generate Maps
+# ---------------------------------------------------------
 inv_regex = "|".join(TEXAS_INVASIVES)
 sgcn_regex = "|".join(TEXAS_SGCN)
 df["is_invasive"] = df["scientific_name"].str.contains(inv_regex, case=False, na=False)
 df["is_sgcn"] = df["scientific_name"].str.contains(sgcn_regex, case=False, na=False)
 
-# H3 binning
 df["h3_cell"] = df.apply(lambda r: h3.latlng_to_cell(r["latitude"], r["longitude"], H3_RESOLUTION), axis=1)
 
 hex_summary = df.groupby("h3_cell").agg(
@@ -83,7 +116,6 @@ hex_summary = df.groupby("h3_cell").agg(
     sgcn_obs=("is_sgcn", "sum")
 ).reset_index()
 
-# Aggregated lists
 inv_richness = df[df["is_invasive"]].groupby("h3_cell")["scientific_name"].agg(
     invasive_richness="nunique",
     invasive_list=lambda names: ", ".join(sorted(names.unique()))
@@ -124,7 +156,7 @@ def init_base_map():
     ).add_to(m)
     return m
 
-# --- GENERATE MAP 1: Richness & Gaps ---
+# Map 1: Richness & Gaps
 m1 = init_base_map()
 r_cmap = cm.linear.YlGnBu_09.scale(1, max(hex_summary["species_richness"].max(), 1))
 r_cmap.caption = "Species Richness"
@@ -148,7 +180,7 @@ fg_gaps.add_to(m1)
 folium.LayerControl(collapsed=False).add_to(m1)
 m1.save("map_richness_gaps.html")
 
-# --- GENERATE MAP 2: Invasives & SGCN ---
+# Map 2: Invasives & SGCN
 m2 = init_base_map()
 inv_cells = hex_summary[hex_summary["invasive_richness"] > 0]
 if not inv_cells.empty:
@@ -173,4 +205,4 @@ if not sgcn_cells.empty:
 folium.LayerControl(collapsed=False).add_to(m2)
 m2.save("map_conservation_threats.html")
 
-print("Both maps generated successfully.")
+print("Pipeline executed successfully and datasets updated.")
