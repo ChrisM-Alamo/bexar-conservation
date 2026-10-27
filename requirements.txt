@@ -1,4 +1,5 @@
 pandas
+pyarrow
 h3
 folium
 branca
