@@ -182,25 +182,70 @@ m1.save("map_richness_gaps.html")
 
 # Map 2: Invasives & SGCN
 m2 = init_base_map()
+
+# 1. Invasive Pressure Layer
 inv_cells = hex_summary[hex_summary["invasive_richness"] > 0]
 if not inv_cells.empty:
     fg_inv = folium.FeatureGroup(name="Invasive Pressure", show=True)
     folium.GeoJson(
         make_geojson(inv_cells),
-        style_function=lambda f: {"fillColor": "#e41a1c", "color": "#800026", "weight": 1.2, "fillOpacity": 0.65},
-        tooltip=GeoJsonTooltip(fields=["invasive_richness", "invasive_list", "h3_cell"], aliases=["Invasives Count:", "Species:", "Cell:"])
+        style_function=lambda f: {
+            "fillColor": "#e41a1c",
+            "color": "#800026",
+            "weight": 1.2,
+            "fillOpacity": 0.65,
+        },
+        tooltip=GeoJsonTooltip(
+            fields=["invasive_richness", "invasive_list", "h3_cell"],
+            aliases=["Invasives Count:", "Species:", "Cell:"],
+            style="background-color: white; color: #222; font-family: arial; font-size: 12px; padding: 10px; max-width: 320px; white-space: normal;",
+        ),
     ).add_to(fg_inv)
     fg_inv.add_to(m2)
 
+# 2. SGCN Refugia Layer
 sgcn_cells = hex_summary[hex_summary["sgcn_richness"] > 0]
 if not sgcn_cells.empty:
     fg_sgcn = folium.FeatureGroup(name="SGCN Refugia", show=True)
     folium.GeoJson(
         make_geojson(sgcn_cells),
-        style_function=lambda f: {"fillColor": "#2b8cbe", "color": "#014636", "weight": 1.2, "fillOpacity": 0.65},
-        tooltip=GeoJsonTooltip(fields=["sgcn_richness", "sgcn_list", "h3_cell"], aliases=["SGCN Count:", "Species:", "Cell:"])
+        style_function=lambda f: {
+            "fillColor": "#2b8cbe",
+            "color": "#014636",
+            "weight": 1.2,
+            "fillOpacity": 0.65,
+        },
+        tooltip=GeoJsonTooltip(
+            fields=["sgcn_richness", "sgcn_list", "h3_cell"],
+            aliases=["SGCN Count:", "Species:", "Cell:"],
+            style="background-color: white; color: #222; font-family: arial; font-size: 12px; padding: 10px; max-width: 320px; white-space: normal;",
+        ),
     ).add_to(fg_sgcn)
     fg_sgcn.add_to(m2)
+
+# 3. Direct Threat / Overlap Layer (SGCN + Invasives in Same Cell)
+overlap_cells = hex_summary[
+    (hex_summary["sgcn_richness"] > 0) & (hex_summary["invasive_richness"] > 0)
+]
+if not overlap_cells.empty:
+    fg_overlap = folium.FeatureGroup(
+        name="Direct Threat (SGCN + Invasives Present)", show=False
+    )
+    folium.GeoJson(
+        make_geojson(overlap_cells),
+        style_function=lambda f: {
+            "fillColor": "#ff00ff",  # Vibrant magenta
+            "color": "#4a004a",
+            "weight": 2.0,
+            "fillOpacity": 0.65,
+        },
+        tooltip=GeoJsonTooltip(
+            fields=["sgcn_list", "invasive_list", "h3_cell"],
+            aliases=["SGCN at Risk:", "Invasives Present:", "Cell ID:"],
+            style="background-color: white; color: #222; font-family: arial; font-size: 12px; padding: 10px; max-width: 340px; white-space: normal;",
+        ),
+    ).add_to(fg_overlap)
+    fg_overlap.add_to(m2)
 
 folium.LayerControl(collapsed=False).add_to(m2)
 m2.save("map_conservation_threats.html")
