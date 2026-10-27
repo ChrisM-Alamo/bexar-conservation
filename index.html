@@ -90,7 +90,7 @@
 
   <script>
     function loadMap(pageUrl, buttonElement) {
-      document.getElementById('map-frame').src = pageUrl;
+      document.getElementById('map-frame').src = pageUrl + '?t=' + Date.now();
       const buttons = document.querySelectorAll('.tab-btn');
       buttons.forEach(btn => btn.classList.remove('active'));
       buttonElement.classList.add('active');
